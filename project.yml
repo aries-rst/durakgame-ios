@@ -1,0 +1,35 @@
+name: DurakGame
+options:
+  bundleIdPrefix: com.aries-rst
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: UWM7LPNBH6
+    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "1.0"
+targets:
+  DurakGame:
+    type: application
+    platform: iOS
+    sources:
+      - DurakGame
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aries-rst.durakgame.app
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: DurakGame/Info.plist
+      properties:
+        CFBundleDisplayName: Durak
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
