@@ -4,6 +4,7 @@ struct ContentView: View {
     @StateObject private var store = StoreManager()
     @State private var showGame = false
     @State private var showPremium = false
+    @State private var showLobby = false
 
     private let felt = Color(red: 0.08, green: 0.18, blue: 0.12)
     private let burgundy = Color(red: 0.42, green: 0.09, blue: 0.13)
@@ -37,6 +38,16 @@ struct ContentView: View {
                         }
 
                         Button {
+                            if store.isPremium {
+                                showLobby = true
+                            } else {
+                                showPremium = true
+                            }
+                        } label: {
+                            menuLabel("Игра по сети (Wi-Fi/Bluetooth)", system: "wifi")
+                        }
+
+                        Button {
                             showPremium = true
                         } label: {
                             menuLabel(store.isPremium ? "Premium активен" : "Premium — \(store.priceText)", system: store.isPremium ? "crown.fill" : "crown")
@@ -54,6 +65,9 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showGame) {
                 GameView(store: store)
+            }
+            .navigationDestination(isPresented: $showLobby) {
+                MultiplayerLobbyView(store: store)
             }
             .sheet(isPresented: $showPremium) {
                 PremiumView(store: store)
