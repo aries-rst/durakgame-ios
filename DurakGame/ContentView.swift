@@ -63,8 +63,8 @@ struct ContentView: View {
                         .font(.footnote)
                         .foregroundStyle(cream.opacity(0.6))
                         .padding(.bottom, 24)
+                }
             }
-        }
             .navigationDestination(isPresented: $showGame) {
                 GameView(store: store)
             }
@@ -101,6 +101,6 @@ struct ContentView: View {
     }
 }
 
-#Prveiw {
+#Preview {
     ContentView()
 }
