@@ -1,15 +1,51 @@
 import SwiftUI
 
+struct DealPayload: Codable {
+    var deck: [DurakCard]
+    var trumpCard: DurakCard
+    var whiteHand: [DurakCard]
+    var blackHand: [DurakCard]
+    var tableAttack: [DurakCard]
+    var tableDefense: [DurakCard?]
+    var attacker: DurakPlayer
+    var defender: DurakPlayer
+    var discardCount: Int
+    var winner: DurakPlayer?
+    var loser: DurakPlayer?
+    var isDraw: Bool
+    var statusMessage: String
+}
+
+enum DurakActionKind: String, Codable {
+    case play, take, endRound
+}
+
+struct DurakAction: Codable {
+    var kind: DurakActionKind
+    var card: DurakCard? = nil
+}
+
+struct NetMessage: Codable {
+    var action: DurakAction? = nil
+    var deal: DealPayload? = nil
+}
+
 struct GameView: View {
     @ObservedObject var store: StoreManager
     @StateObject private var engine = DurakEngine()
     @Environment(\.dismiss) private var dismiss
+
+    var multiplayer: MultiplayerManager? = nil
+    var localColor: DurakPlayer = .white
 
     private let felt = Color(red: 0.08, green: 0.18, blue: 0.12)
     private let burgundy = Color(red: 0.42, green: 0.09, blue: 0.13)
     private let gold = Color(red: 0.82, green: 0.68, blue: 0.33)
     private let cream = Color(red: 0.95, green: 0.92, blue: 0.84)
     private let cardBack = Color(red: 0.30, green: 0.07, blue: 0.10)
+
+    private var activeColor: DurakPlayer { multiplayer != nil ? localColor : .white }
+    private var opponentColor: DurakPlayer { activeColor == .white ? .black : .white }
 
     var body: some View {
         ZStack {
@@ -28,16 +64,32 @@ struct GameView: View {
         .onChange(of: engine.moveCount) { _ in
             scheduleBotIfNeeded()
         }
-        .onAppear { scheduleBotIfNeeded() }
+        .onAppear {
+            setupMultiplayerReceiver()
+            scheduleBotIfNeeded()
+        }
         .alert(
             "Игра окончена",
             isPresented: Binding(get: { engine.winner != nil || engine.isDraw }, set: { _ in })
         ) {
-            Button("Новая игра") { engine.reset() }
+            Button("Новая игра") { resetGame() }
             Button("В меню") { dismiss() }
         } message: {
-            Text(engine.statusMessage.isEmpty ? "Игра завершена." : engine.statusMessage)
+            Text(alertMessage)
         }
+    }
+
+    private var alertMessage: String {
+        guard multiplayer != nil else {
+            return engine.statusMessage.isEmpty ? "Игра завершена." : engine.statusMessage
+        }
+        if engine.isDraw {
+            return "Ничья — колода закончилась одновременно с обеими руками."
+        }
+        guard let winner = engine.winner else {
+            return "Игра завершена."
+        }
+        return winner == localColor ? "Вы вышли! Соперник остался дураком." : "Соперник вышел. Вы — дурак!"
     }
 
     private var header: some View {
@@ -63,12 +115,12 @@ struct GameView: View {
 
     private var botRow: some View {
         HStack(spacing: 4) {
-            Text(engine.attacker == .black ? "Бот атакует" : "Бот защищается")
+            Text(opponentLabel)
                 .font(.caption)
                 .foregroundStyle(gold)
             Spacer()
             HStack(spacing: -22) {
-                ForEach(0..<(engine.hands[.black]?.count ?? 0), id: \.self) { _ in
+                ForEach(0..<(engine.hands[opponentColor]?.count ?? 0), id: \.self) { _ in
                     RoundedRectangle(cornerRadius: 5)
                         .fill(cardBack)
                         .frame(width: 34, height: 48)
@@ -79,11 +131,16 @@ struct GameView: View {
         .padding(.horizontal, 16)
     }
 
+    private var opponentLabel: String {
+        let verb = engine.attacker == opponentColor ? "атакует" : "защищается"
+        return multiplayer != nil ? "Соперник \(verb)" : "Бот \(verb)"
+    }
+
     private var tableView: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 if engine.tableAttack.isEmpty {
-                    Text(engine.attacker == .white ? "Выберите карту для атаки" : "Бот сейчас атакует…")
+                    Text(engine.attacker == activeColor ? "Выберите карту для атаки" : (multiplayer != nil ? "Соперник сейчас атакует…" : "Бот сейчас атакует…"))
                         .font(.footnote)
                         .foregroundStyle(cream.opacity(0.5))
                         .padding(.horizontal, 16)
@@ -111,26 +168,40 @@ struct GameView: View {
 
     private var actionBar: some View {
         HStack(spacing: 12) {
-            if engine.attacker == .white, engine.canEndRound {
-                Button("Бито") { engine.endRoundSuccessfully() }
+            if engine.attacker == activeColor, engine.canEndRound {
+                Button("Бито") { handleEndRound() }
                     .buttonStyle(.borderedProminent)
                     .tint(gold)
             }
-            if engine.defender == .white, engine.awaitingDefense {
-                Button("Беру") { engine.take(by: .white) }
+            if engine.defender == activeColor, engine.awaitingDefense {
+                Button("Беру") { handleTake() }
                     .buttonStyle(.borderedProminent)
                     .tint(burgundy)
             }
             Spacer()
-            Button {
-                engine.reset()
-            } label: {
-                Label("Новая игра", systemImage: "arrow.counterclockwise")
+            if multiplayer == nil || localColor == .white {
+                Button {
+                    resetGame()
+                } label: {
+                    Label("Новая игра", systemImage: "arrow.counterclockwise")
+                }
+                .font(.caption)
             }
-            .font(.caption)
+            if let mp = multiplayer {
+                Text(multiplayerStatusText(mp))
+                    .font(.caption2)
+                    .foregroundStyle(cream.opacity(0.5))
+            }
         }
         .foregroundStyle(cream)
         .padding(.horizontal, 16)
+    }
+
+    private func multiplayerStatusText(_ mp: MultiplayerManager) -> String {
+        if case .connected(let name) = mp.state {
+            return "Подключено: \(name)"
+        }
+        return "Соединение прервано"
     }
 
     private var handRow: some View {
@@ -140,12 +211,12 @@ struct GameView: View {
                 .foregroundStyle(cream.opacity(0.7))
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    ForEach(engine.hands[.white] ?? []) { card in
+                    ForEach(engine.hands[activeColor] ?? []) { card in
                         let playable = isPlayable(card)
                         cardView(card)
                             .opacity(playable ? 1 : 0.4)
                             .scaleEffect(engine.selectedCard == card ? 1.08 : 1)
-                            .onTapGesture { engine.tapHandCard(card) }
+                            .onTapGesture { handleTapCard(card) }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -156,8 +227,8 @@ struct GameView: View {
     }
 
     private func isPlayable(_ card: DurakCard) -> Bool {
-        if engine.attacker == .white { return engine.isValidAttackCard(card) }
-        if engine.defender == .white { return engine.isValidDefenseCard(card) }
+        if engine.attacker == activeColor { return engine.isValidAttackCard(card) }
+        if engine.defender == activeColor { return engine.isValidDefenseCard(card) }
         return false
     }
 
@@ -181,12 +252,126 @@ struct GameView: View {
     }
 
     private func scheduleBotIfNeeded() {
+        guard multiplayer == nil else { return }
         guard engine.winner == nil, !engine.isDraw else { return }
         let botShouldAct = (engine.defender == .black && engine.awaitingDefense)
             || (engine.attacker == .black && !engine.awaitingDefense)
         guard botShouldAct else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             engine.botActIfNeeded()
+        }
+    }
+
+    private func handleTapCard(_ card: DurakCard) {
+        guard multiplayer != nil else {
+            engine.tapHandCard(card)
+            return
+        }
+        if localColor == .white {
+            engine.humanTapCard(card, color: .white)
+            sendCurrentDeal()
+        } else {
+            multiplayer?.send(NetMessage(action: DurakAction(kind: .play, card: card)))
+        }
+    }
+
+    private func handleTake() {
+        guard multiplayer != nil else {
+            engine.take(by: .white)
+            return
+        }
+        if localColor == .white {
+            engine.take(by: .white)
+            sendCurrentDeal()
+        } else {
+            multiplayer?.send(NetMessage(action: DurakAction(kind: .take)))
+        }
+    }
+
+    private func handleEndRound() {
+        guard multiplayer != nil else {
+            engine.endRoundSuccessfully()
+            return
+        }
+        if localColor == .white {
+            engine.endRoundSuccessfully()
+            sendCurrentDeal()
+        } else {
+            multiplayer?.send(NetMessage(action: DurakAction(kind: .endRound)))
+        }
+    }
+
+    private func resetGame() {
+        if multiplayer != nil {
+            guard localColor == .white else { return }
+            engine.reset()
+            sendCurrentDeal()
+        } else {
+            engine.reset()
+        }
+    }
+
+    private func sendCurrentDeal() {
+        let deal = DealPayload(
+            deck: engine.deck,
+            trumpCard: engine.trumpCard,
+            whiteHand: engine.hands[.white] ?? [],
+            blackHand: engine.hands[.black] ?? [],
+            tableAttack: engine.tableAttack,
+            tableDefense: engine.tableDefense,
+            attacker: engine.attacker,
+            defender: engine.defender,
+            discardCount: engine.discardCount,
+            winner: engine.winner,
+            loser: engine.loser,
+            isDraw: engine.isDraw,
+            statusMessage: engine.statusMessage
+        )
+        multiplayer?.send(NetMessage(deal: deal))
+    }
+
+    private func setupMultiplayerReceiver() {
+        guard let mp = multiplayer else { return }
+        if localColor == .white {
+            // Host already dealt and shuffled the real game in engine's init();
+            // broadcast it so the guest mirrors the exact same hands/table/deck.
+            sendCurrentDeal()
+        }
+        mp.onReceive = { data in
+            guard let msg = try? JSONDecoder().decode(NetMessage.self, from: data) else { return }
+            DispatchQueue.main.async {
+                if let deal = msg.deal {
+                    engine.applyDeal(
+                        deck: deal.deck,
+                        trumpCard: deal.trumpCard,
+                        whiteHand: deal.whiteHand,
+                        blackHand: deal.blackHand,
+                        tableAttack: deal.tableAttack,
+                        tableDefense: deal.tableDefense,
+                        attacker: deal.attacker,
+                        defender: deal.defender,
+                        discardCount: deal.discardCount,
+                        winner: deal.winner,
+                        loser: deal.loser,
+                        isDraw: deal.isDraw,
+                        statusMessage: deal.statusMessage
+                    )
+                } else if let action = msg.action, localColor == .white {
+                    // Host applies an action requested by the guest (always
+                    // black), then rebroadcasts the resulting authoritative state.
+                    switch action.kind {
+                    case .play:
+                        if let card = action.card {
+                            engine.humanTapCard(card, color: .black)
+                        }
+                    case .take:
+                        engine.take(by: .black)
+                    case .endRound:
+                        engine.endRoundSuccessfully()
+                    }
+                    sendCurrentDeal()
+                }
+            }
         }
     }
 }
