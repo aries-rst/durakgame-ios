@@ -5,7 +5,7 @@ enum DurakPlayer: String, Codable, Equatable {
     case black // bot
 }
 
-enum CardSuit: String, CaseIterable, Equatable, Hashable {
+enum CardSuit: String, CaseIterable, Equatable, Hashable, Codable {
     case spades, hearts, diamonds, clubs
 
     var symbol: String {
@@ -20,7 +20,7 @@ enum CardSuit: String, CaseIterable, Equatable, Hashable {
     var isRed: Bool { self == .hearts || self == .diamonds }
 }
 
-enum CardRank: Int, CaseIterable, Equatable, Hashable, Comparable {
+enum CardRank: Int, CaseIterable, Equatable, Hashable, Comparable, Codable {
     case six = 6, seven, eight, nine, ten, jack, queen, king, ace
 
     static func < (lhs: CardRank, rhs: CardRank) -> Bool { lhs.rawValue < rhs.rawValue }
@@ -40,7 +40,7 @@ enum CardRank: Int, CaseIterable, Equatable, Hashable, Comparable {
     }
 }
 
-struct DurakCard: Equatable, Hashable, Identifiable {
+struct DurakCard: Equatable, Hashable, Identifiable, Codable {
     var suit: CardSuit
     var rank: CardRank
     var id: String { "\(rank.rawValue)-\(suit.rawValue)" }
@@ -251,6 +251,43 @@ final class DurakEngine: ObservableObject {
         } else if defender == .white, isValidDefenseCard(card) {
             defend(card, by: .white)
         }
+    }
+
+    /// Multiplayer: lets either color act with their own chosen card,
+    /// mirroring `tapHandCard` which is hardcoded to `.white` because
+    /// single-player always casts the local human as white.
+    func humanTapCard(_ card: DurakCard, color: DurakPlayer) {
+        guard winner == nil, !isDraw else { return }
+        if attacker == color, isValidAttackCard(card) {
+            attack(card, by: color)
+        } else if defender == color, isValidDefenseCard(card) {
+            defend(card, by: color)
+        }
+    }
+
+    // MARK: - Multiplayer sync
+
+    /// Replaces the current state wholesale with one received from the host,
+    /// so a multiplayer guest mirrors the host's authoritative (and
+    /// already-random) shuffle/draw results instead of generating its own.
+    /// The host device runs the real `reset()`/`attack()`/`defend()`/`take()`/
+    /// `endRoundSuccessfully()` logic exactly as in single-player and
+    /// broadcasts the result after every change; the guest's own engine
+    /// instance never calls those methods itself.
+    func applyDeal(deck: [DurakCard], trumpCard: DurakCard, whiteHand: [DurakCard], blackHand: [DurakCard], tableAttack: [DurakCard], tableDefense: [DurakCard?], attacker: DurakPlayer, defender: DurakPlayer, discardCount: Int, winner: DurakPlayer?, loser: DurakPlayer?, isDraw: Bool, statusMessage: String) {
+        self.deck = deck
+        self.trumpCard = trumpCard
+        self.hands = [.white: whiteHand, .black: blackHand]
+        self.tableAttack = tableAttack
+        self.tableDefense = tableDefense
+        self.attacker = attacker
+        self.defender = defender
+        self.discardCount = discardCount
+        self.winner = winner
+        self.loser = loser
+        self.isDraw = isDraw
+        self.selectedCard = nil
+        self.statusMessage = statusMessage
     }
 }
 
