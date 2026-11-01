@@ -32,6 +32,7 @@ struct NetMessage: Codable {
 
 struct GameView: View {
     @ObservedObject var store: StoreManager
+    @ObservedObject private var lang = AppLang.shared
     @StateObject private var engine = DurakEngine()
     @Environment(\.dismiss) private var dismiss
 
@@ -69,11 +70,11 @@ struct GameView: View {
             scheduleBotIfNeeded()
         }
         .alert(
-            "Игра окончена",
+            t("Game Over", "Игра окончена"),
             isPresented: Binding(get: { engine.winner != nil || engine.isDraw }, set: { _ in })
         ) {
-            Button("Новая игра") { resetGame() }
-            Button("В меню") { dismiss() }
+            Button(t("New Game", "Новая игра")) { resetGame() }
+            Button(t("Menu", "В меню")) { dismiss() }
         } message: {
             Text(alertMessage)
         }
@@ -81,15 +82,15 @@ struct GameView: View {
 
     private var alertMessage: String {
         guard multiplayer != nil else {
-            return engine.statusMessage.isEmpty ? "Игра завершена." : engine.statusMessage
+            return engine.statusMessage.isEmpty ? t("Game over.", "Игра завершена.") : engine.statusMessage
         }
         if engine.isDraw {
-            return "Ничья — колода закончилась одновременно с обеими руками."
+            return t("A draw — the deck ran out with both hands empty at the same time.", "Ничья — колода закончилась одновременно с обеими руками.")
         }
         guard let winner = engine.winner else {
-            return "Игра завершена."
+            return t("Game over.", "Игра завершена.")
         }
-        return winner == localColor ? "Вы вышли! Соперник остался дураком." : "Соперник вышел. Вы — дурак!"
+        return winner == localColor ? t("You're out! Your opponent is the fool.", "Вы вышли! Соперник остался дураком.") : t("Your opponent is out. You're the fool!", "Соперник вышел. Вы — дурак!")
     }
 
     private var header: some View {
@@ -97,16 +98,16 @@ struct GameView: View {
             HStack(spacing: 4) {
                 Text(engine.trumpSuit.symbol)
                     .foregroundStyle(engine.trumpSuit.isRed ? .red : cream)
-                Text("козырь")
+                Text(t("trump", "козырь"))
                     .font(.caption)
                     .foregroundStyle(cream.opacity(0.7))
             }
             Spacer()
-            Text("Колода: \(engine.deck.count)")
+            Text("\(t("Deck", "Колода")): \(engine.deck.count)")
                 .font(.caption)
                 .foregroundStyle(gold)
             Spacer()
-            Text("Бито: \(engine.discardCount)")
+            Text("\(t("Discarded", "Бито")): \(engine.discardCount)")
                 .font(.caption)
                 .foregroundStyle(cream.opacity(0.6))
         }
@@ -132,15 +133,15 @@ struct GameView: View {
     }
 
     private var opponentLabel: String {
-        let verb = engine.attacker == opponentColor ? "атакует" : "защищается"
-        return multiplayer != nil ? "Соперник \(verb)" : "Бот \(verb)"
+        let verb = engine.attacker == opponentColor ? t("attacking", "атакует") : t("defending", "защищается")
+        return multiplayer != nil ? "\(t("Opponent", "Соперник")) \(verb)" : "\(t("Bot", "Бот")) \(verb)"
     }
 
     private var tableView: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 if engine.tableAttack.isEmpty {
-                    Text(engine.attacker == activeColor ? "Выберите карту для атаки" : (multiplayer != nil ? "Соперник сейчас атакует…" : "Бот сейчас атакует…"))
+                    Text(engine.attacker == activeColor ? t("Choose a card to attack with", "Выберите карту для атаки") : (multiplayer != nil ? t("Opponent is attacking…", "Соперник сейчас атакует…") : t("Bot is attacking…", "Бот сейчас атакует…")))
                         .font(.footnote)
                         .foregroundStyle(cream.opacity(0.5))
                         .padding(.horizontal, 16)
@@ -169,12 +170,12 @@ struct GameView: View {
     private var actionBar: some View {
         HStack(spacing: 12) {
             if engine.attacker == activeColor, engine.canEndRound {
-                Button("Бито") { handleEndRound() }
+                Button(t("Done", "Бито")) { handleEndRound() }
                     .buttonStyle(.borderedProminent)
                     .tint(gold)
             }
             if engine.defender == activeColor, engine.awaitingDefense {
-                Button("Беру") { handleTake() }
+                Button(t("Take", "Беру")) { handleTake() }
                     .buttonStyle(.borderedProminent)
                     .tint(burgundy)
             }
@@ -183,7 +184,7 @@ struct GameView: View {
                 Button {
                     resetGame()
                 } label: {
-                    Label("Новая игра", systemImage: "arrow.counterclockwise")
+                    Label(t("New Game", "Новая игра"), systemImage: "arrow.counterclockwise")
                 }
                 .font(.caption)
             }
@@ -199,14 +200,14 @@ struct GameView: View {
 
     private func multiplayerStatusText(_ mp: MultiplayerManager) -> String {
         if case .connected(let name) = mp.state {
-            return "Подключено: \(name)"
+            return "\(t("Connected", "Подключено")): \(name)"
         }
-        return "Соединение прервано"
+        return t("Connection lost", "Соединение прервано")
     }
 
     private var handRow: some View {
         VStack(spacing: 6) {
-            Text("Ваши карты")
+            Text(t("Your cards", "Ваши карты"))
                 .font(.caption)
                 .foregroundStyle(cream.opacity(0.7))
             ScrollView(.horizontal, showsIndicators: false) {
@@ -378,6 +379,7 @@ struct GameView: View {
 
 struct PremiumView: View {
     @ObservedObject var store: StoreManager
+    @ObservedObject private var lang = AppLang.shared
     @Environment(\.dismiss) private var dismiss
 
     private let gold = Color(red: 0.82, green: 0.68, blue: 0.33)
@@ -390,24 +392,24 @@ struct PremiumView: View {
                     .foregroundStyle(gold)
                     .padding(.top, 24)
 
-                Text("Дурак Premium")
+                Text(t("Durak Premium", "Дурак Premium"))
                     .font(.title2.bold())
 
                 VStack(alignment: .leading, spacing: 12) {
-                    featureRow("Без рекламы")
-                    featureRow("Локальный мультиплеер по Wi-Fi/Bluetooth")
-                    featureRow("Разовая покупка — навсегда")
+                    featureRow(t("No ads", "Без рекламы"))
+                    featureRow(t("Local Wi-Fi/Bluetooth multiplayer", "Локальный мультиплеер по Wi-Fi/Bluetooth"))
+                    featureRow(t("One-time purchase — yours forever", "Разовая покупка — навсегда"))
                 }
                 .padding(.horizontal, 24)
 
                 if store.isPremium {
-                    Label("Premium уже активен", systemImage: "checkmark.seal.fill")
+                    Label(t("Premium is already active", "Premium уже активен"), systemImage: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                 } else {
                     Button {
                         Task { await store.purchasePremium() }
                     } label: {
-                        Text("Купить за \(store.priceText)")
+                        Text("\(t("Buy for", "Купить за")) \(store.priceText)")
                             .fontWeight(.bold)
                             .frame(maxWidth: .infinity)
                             .padding()
@@ -417,7 +419,7 @@ struct PremiumView: View {
                     }
                     .padding(.horizontal, 24)
 
-                    Button("Восстановить покупки") {
+                    Button(t("Restore Purchases", "Восстановить покупки")) {
                         Task { await store.restorePurchases() }
                     }
                     .font(.footnote)
@@ -431,7 +433,7 @@ struct PremiumView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Закрыть") { dismiss() }
+                    Button(t("Close", "Закрыть")) { dismiss() }
                 }
             }
         }

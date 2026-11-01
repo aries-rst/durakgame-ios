@@ -32,10 +32,10 @@ enum CardRank: Int, CaseIterable, Equatable, Hashable, Comparable, Codable {
         case .eight: return "8"
         case .nine: return "9"
         case .ten: return "10"
-        case .jack: return "В"
-        case .queen: return "Д"
-        case .king: return "К"
-        case .ace: return "Т"
+        case .jack: return t("J", "В")
+        case .queen: return t("Q", "Д")
+        case .king: return t("K", "К")
+        case .ace: return t("A", "Т")
         }
     }
 }
@@ -232,15 +232,15 @@ final class DurakEngine: ObservableObject {
         let blackEmpty = hands[.black]?.isEmpty ?? true
         if whiteEmpty && blackEmpty {
             isDraw = true
-            statusMessage = "Ничья — колода закончилась одновременно с обеими руками."
+            statusMessage = t("A draw — the deck ran out with both hands empty at the same time.", "Ничья — колода закончилась одновременно с обеими руками.")
         } else if whiteEmpty {
             winner = .white
             loser = .black
-            statusMessage = "Вы вышли! Бот остался дураком."
+            statusMessage = t("You're out! The bot is the fool.", "Вы вышли! Бот остался дураком.")
         } else if blackEmpty {
             winner = .black
             loser = .white
-            statusMessage = "Бот вышел. Вы — дурак!"
+            statusMessage = t("The bot is out. You're the fool!", "Бот вышел. Вы — дурак!")
         }
     }
 
