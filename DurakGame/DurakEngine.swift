@@ -1,345 +1,604 @@
 import Foundation
 
-enum DurakPlayer: String, Codable, Equatable {
-    case white // human
-    case black // bot
-}
+// MARK: - N-player (2–6 seat) Durak engine — Подкидной (throw-in) / Переводной
+// (transfer) дурак.
+//
+// Faithful Swift port of the Android Kotlin engine (`DurakEngine.kt`'s rules:
+// `newGame`/`beats`/`nextActive`/`limit`/`throwers`/`canThrow`/`canTransfer`/
+// `pending`/`resolve`). Kept intentionally close to that structure — free
+// functions operating on a mutable state object — so the rules stay
+// bug-for-bug compatible, exactly like this portfolio's Domino engine port.
+// Types are prefixed `Durak` to avoid colliding with any other game's types.
+//
+// 36-card deck (6 through Ace, no 2–5), suits spades/clubs/hearts/diamonds.
+// The attacker opens with a card; while any attack on the table is
+// undefended the other active seats may throw in more cards matching a
+// rank already on the table (up to `limit()`, and never more undefended
+// attacks than the defender could possibly still cover). The defender must
+// beat every attack (same suit & higher rank, or any trump over a
+// non-trump) or declare they're taking everything into their hand. In
+// переводной, before defending a single card the defender may instead
+// "transfer" the whole table — if every attack card on it shares one rank —
+// to the next active seat, which becomes the new defender. Once a bout
+// resolves, hands refill to 6 from the deck (attacker-relative order, the
+// defender last); a seat left empty when the deck is spent is "out" (safe).
+// The last seat still holding cards once everyone else is out is the fool.
 
-enum CardSuit: String, CaseIterable, Equatable, Hashable, Codable {
-    case spades, hearts, diamonds, clubs
+// MARK: - Cards
+
+enum DurakSuit: Int, CaseIterable, Codable, Hashable {
+    case spades = 0, clubs = 1, hearts = 2, diamonds = 3
 
     var symbol: String {
         switch self {
         case .spades: return "♠"
+        case .clubs: return "♣"
         case .hearts: return "♥"
         case .diamonds: return "♦"
-        case .clubs: return "♣"
         }
     }
 
     var isRed: Bool { self == .hearts || self == .diamonds }
 }
 
-enum CardRank: Int, CaseIterable, Equatable, Hashable, Comparable, Codable {
-    case six = 6, seven, eight, nine, ten, jack, queen, king, ace
+struct DurakCard: Equatable, Hashable, Identifiable, Codable {
+    var suit: DurakSuit
+    var rank: Int // 6...14 (J=11, Q=12, K=13, A=14)
 
-    static func < (lhs: CardRank, rhs: CardRank) -> Bool { lhs.rawValue < rhs.rawValue }
+    /// Matches the Kotlin engine's `Card.id = s*100+r` exactly.
+    var id: Int { suit.rawValue * 100 + rank }
 
     var label: String {
-        switch self {
-        case .six: return "6"
-        case .seven: return "7"
-        case .eight: return "8"
-        case .nine: return "9"
-        case .ten: return "10"
-        case .jack: return t("J", "В")
-        case .queen: return t("Q", "Д")
-        case .king: return t("K", "К")
-        case .ace: return t("A", "Т")
+        switch rank {
+        case 6...10: return "\(rank)"
+        case 11: return t("J", "В")
+        case 12: return t("Q", "Д")
+        case 13: return t("K", "К")
+        case 14: return t("A", "Т")
+        default: return "\(rank)"
         }
     }
+
+    static let allRanks = Array(6...14)
+
+    static func fullDeck() -> [DurakCard] {
+        var out: [DurakCard] = []
+        for s in DurakSuit.allCases {
+            for r in allRanks { out.append(DurakCard(suit: s, rank: r)) }
+        }
+        return out
+    }
 }
 
-struct DurakCard: Equatable, Hashable, Identifiable, Codable {
-    var suit: CardSuit
-    var rank: CardRank
-    var id: String { "\(rank.rawValue)-\(suit.rawValue)" }
+/// One attack card on the table, with its defending card once (if) played.
+struct DurakTPair: Codable, Hashable {
+    var attack: DurakCard
+    var defense: DurakCard?
 }
 
-/// Подкидной дурак (throw-in Durak), 2 players (you vs. a bot), 36-card deck
-/// (6 through Ace), 6 cards dealt each. The attacker opens with a card; the
-/// defender must beat each attack (higher card of the same suit, or any trump
-/// over a non-trump) or take every card on the table into their hand. While
-/// any attack remains undefended the attacker may throw in more cards
-/// matching a rank already on the table, up to 6 cards or the defender's
-/// starting hand size for the round, whichever is smaller. If the defender
-/// beats everything and the attacker stops, the table is discarded, both
-/// draw back up to 6 (attacker first), and the defender becomes the new
-/// attacker. If the defender takes, only the attacker redraws and the same
-/// two keep their roles. Once the deck is empty, the first player to empty
-/// their hand is safe; the other is left "the fool."
-final class DurakEngine: ObservableObject {
-    @Published var deck: [DurakCard] = []
-    @Published var trumpCard: DurakCard!
-    @Published var hands: [DurakPlayer: [DurakCard]] = [:]
-    @Published var tableAttack: [DurakCard] = []
-    @Published var tableDefense: [DurakCard?] = []
-    @Published var attacker: DurakPlayer = .white
-    @Published var defender: DurakPlayer = .black
-    @Published var discardCount: Int = 0
-    @Published var winner: DurakPlayer? = nil
-    @Published var loser: DurakPlayer? = nil
-    @Published var isDraw: Bool = false
-    @Published var selectedCard: DurakCard? = nil
-    @Published var statusMessage: String = ""
-    /// Bumped on every state-changing action so the view can re-trigger the bot.
-    @Published var moveCount: Int = 0
+enum DurakVariant: String, Codable, CaseIterable {
+    case podkidnoy  // throw-in: any thrower may add matching-rank cards
+    case perevodnoy // transfer: defender may redirect the whole table once, undefended
+}
 
-    var trumpSuit: CardSuit { trumpCard.suit }
-    private var roundLimit: Int = 6
+enum DurakPendingKind: String, Codable {
+    case lead     // table empty: attacker must open
+    case defend   // an attack is undefended: defender must beat it, transfer, or take
+    case throwIn  // table has an undefended attack and a thrower (not yet all passed) may add to it
+    case resolve  // everything defended (or taking) and no one can/will throw in more
+}
 
-    init() {
-        reset()
+struct DurakPending: Equatable {
+    var kind: DurakPendingKind
+    var seat: Int
+}
+
+/// A seedable xorshift64* RNG, mirroring this portfolio's Domino/Nardy
+/// engines so shuffle/bot behaviour can be made deterministic for testing.
+final class SeededGenerator {
+    private var state: UInt64
+
+    init(seed: UInt64 = UInt64.random(in: UInt64.min...UInt64.max)) {
+        self.state = seed == 0 ? 0x9E3779B97F4A7C15 : seed
     }
 
-    func reset() {
-        var full: [DurakCard] = []
-        for suit in CardSuit.allCases {
-            for rank in CardRank.allCases {
-                full.append(DurakCard(suit: suit, rank: rank))
+    func next() -> UInt64 {
+        state ^= state << 13
+        state ^= state >> 7
+        state ^= state << 17
+        return state
+    }
+
+    /// Uniform integer in [0, bound).
+    func nextInt(_ bound: Int) -> Int {
+        guard bound > 0 else { return 0 }
+        return Int(next() % UInt64(bound))
+    }
+
+    /// Uniform double in [0, 1).
+    func nextDouble() -> Double {
+        Double(next() >> 11) * (1.0 / 9007199254740992.0) // 2^-53
+    }
+}
+
+/// Mutable match state. Kept as a class so the `Durak` engine functions can
+/// mutate it in place, exactly like the Kotlin `DState` does.
+final class DurakMatch {
+    let n: Int
+    let variant: DurakVariant
+    let throwAll: Bool
+
+    var hands: [[DurakCard]]
+    var deck: [DurakCard]
+    var trumpCard: DurakCard
+    var trump: DurakSuit { trumpCard.suit }
+
+    var table: [DurakTPair] = []
+    var attacker: Int
+    var defender: Int = 0
+    /// The defender's hand size at the moment they became defender this
+    /// bout — caps how many cards can ever land on the table this bout.
+    var defStart: Int = 0
+
+    /// true once a seat has safely emptied its hand (deck spent); such a
+    /// seat is skipped by `nextActive` and can never attack/defend again.
+    var out: [Bool]
+    /// Seats in the order they went `out`, i.e. the order they finished.
+    var finish: [Int] = []
+
+    var taking: Bool = false
+    /// Throwers who have already declined to add to the table this bout.
+    var passed: Set<Int> = []
+    /// True only for the very first bout of the whole match — caps the
+    /// table at 5 cards during it (6 thereafter), per Android's exact rule.
+    var firstBout: Bool = true
+    var bout: Int = 0
+
+    var over: Bool = false
+    /// The seat left holding cards when everyone else is out (-1 = draw/no fool).
+    var loser: Int = -1
+    /// Set if the 200-bout safety cap was hit — treated as a draw.
+    var stalled: Bool = false
+
+    var discardCount: Int = 0
+
+    init(n: Int, variant: DurakVariant, throwAll: Bool, hands: [[DurakCard]], deck: [DurakCard], trumpCard: DurakCard, attacker: Int) {
+        self.n = n
+        self.variant = variant
+        self.throwAll = throwAll
+        self.hands = hands
+        self.deck = deck
+        self.trumpCard = trumpCard
+        self.attacker = attacker
+        self.out = Array(repeating: false, count: n)
+    }
+}
+
+enum Durak {
+    static let minPlayers = 2
+    static let maxPlayers = 6
+
+    // MARK: - Setup
+
+    /// Shuffles a fresh 36-card deck, peeks (does not remove) the trump
+    /// card from the bottom, deals 6 cards per seat round-robin from the
+    /// front for 6 rounds (which, at n=6, exhausts the deck including the
+    /// trump card itself — matching Android exactly), then finds whoever
+    /// holds the single lowest-ranked trump across all hands as the first
+    /// attacker (random if nobody holds one).
+    static func newGame(n: Int, variant: DurakVariant, throwAll: Bool, rnd: SeededGenerator = SeededGenerator()) -> DurakMatch {
+        let clampedN = min(max(n, minPlayers), maxPlayers)
+        var deck = DurakCard.fullDeck()
+        if deck.count > 1 {
+            for i in stride(from: deck.count - 1, through: 1, by: -1) {
+                let j = rnd.nextInt(i + 1)
+                deck.swapAt(i, j)
             }
         }
-        full.shuffle()
+        let trumpCard = deck.last!
 
-        let white = Array(full.prefix(6))
-        full.removeFirst(6)
-        let black = Array(full.prefix(6))
-        full.removeFirst(6)
-
-        let trump = full.first!
-        full.removeFirst()
-        full.append(trump)
-
-        deck = full
-        trumpCard = trump
-        hands = [.white: white, .black: black]
-        tableAttack = []
-        tableDefense = []
-        discardCount = 0
-        winner = nil
-        loser = nil
-        isDraw = false
-        selectedCard = nil
-        statusMessage = ""
-        roundLimit = 6
-
-        func lowestTrump(_ hand: [DurakCard]) -> Int? {
-            hand.filter { $0.suit == trump.suit }.map { $0.rank.rawValue }.min()
+        var hands: [[DurakCard]] = Array(repeating: [], count: clampedN)
+        for _ in 0..<6 {
+            for p in 0..<clampedN {
+                if deck.isEmpty { break }
+                hands[p].append(deck.removeFirst())
+            }
         }
-        let w = lowestTrump(white)
-        let b = lowestTrump(black)
-        if let w, let b {
-            attacker = w <= b ? .white : .black
-        } else if w != nil {
-            attacker = .white
-        } else if b != nil {
-            attacker = .black
-        } else {
-            attacker = .white
+
+        var attacker = -1
+        var bestRank = Int.max
+        for p in 0..<clampedN {
+            for c in hands[p] where c.suit == trumpCard.suit {
+                if c.rank < bestRank {
+                    bestRank = c.rank
+                    attacker = p
+                }
+            }
         }
-        defender = attacker == .white ? .black : .white
-        moveCount += 1
+        if attacker == -1 {
+            attacker = rnd.nextInt(clampedN)
+        }
+
+        let m = DurakMatch(n: clampedN, variant: variant, throwAll: throwAll, hands: hands, deck: deck, trumpCard: trumpCard, attacker: attacker)
+        m.defender = nextActive(m, attacker)
+        m.defStart = m.hands[m.defender].count
+        return m
     }
 
-    private func beats(_ defense: DurakCard, _ attack: DurakCard) -> Bool {
+    // MARK: - Core queries
+
+    static func beats(_ defense: DurakCard, _ attack: DurakCard, _ trump: DurakSuit) -> Bool {
         if defense.suit == attack.suit { return defense.rank > attack.rank }
-        if defense.suit == trumpSuit && attack.suit != trumpSuit { return true }
+        if defense.suit == trump && attack.suit != trump { return true }
         return false
     }
 
-    var tableRanks: Set<CardRank> {
-        Set(tableAttack.map { $0.rank } + tableDefense.compactMap { $0?.rank })
+    /// Bot/hint heuristic: higher is "more valuable to keep."
+    static func value(_ c: DurakCard, _ trump: DurakSuit) -> Int {
+        c.rank + (c.suit == trump ? 20 : 0)
     }
 
-    var awaitingDefense: Bool { tableDefense.contains { $0 == nil } }
-    var canEndRound: Bool { !tableAttack.isEmpty && !awaitingDefense }
-    var earliestUndefendedIndex: Int? { tableDefense.firstIndex { $0 == nil } }
-
-    func isValidAttackCard(_ card: DurakCard) -> Bool {
-        if tableAttack.isEmpty { return true }
-        return tableRanks.contains(card.rank) && tableAttack.count < roundLimit
-    }
-
-    func isValidDefenseCard(_ card: DurakCard) -> Bool {
-        guard let index = earliestUndefendedIndex else { return false }
-        return beats(card, tableAttack[index])
-    }
-
-    @discardableResult
-    func attack(_ card: DurakCard, by player: DurakPlayer) -> Bool {
-        guard player == attacker, winner == nil, isDraw == false else { return false }
-        guard hands[player]?.contains(card) == true else { return false }
-        if tableAttack.isEmpty {
-            roundLimit = min(6, hands[defender]?.count ?? 6)
+    /// Next active (not-out) seat clockwise from `p`, wrapping.
+    static func nextActive(_ m: DurakMatch, _ p: Int) -> Int {
+        var i = (p + 1) % m.n
+        var steps = 0
+        while m.out[i] && steps < m.n {
+            i = (i + 1) % m.n
+            steps += 1
         }
-        guard isValidAttackCard(card) else { return false }
-
-        hands[player]?.removeAll { $0 == card }
-        tableAttack.append(card)
-        tableDefense.append(nil)
-        if player == .white { selectedCard = nil }
-        moveCount += 1
-        return true
+        return i
     }
 
-    @discardableResult
-    func defend(_ card: DurakCard, by player: DurakPlayer) -> Bool {
-        guard player == defender, winner == nil, isDraw == false else { return false }
-        guard let index = earliestUndefendedIndex else { return false }
-        guard hands[player]?.contains(card) == true, beats(card, tableAttack[index]) else { return false }
-
-        hands[player]?.removeAll { $0 == card }
-        tableDefense[index] = card
-        if player == .white { selectedCard = nil }
-        moveCount += 1
-        return true
-    }
-
-    func take(by player: DurakPlayer) {
-        guard player == defender, winner == nil, isDraw == false else { return }
-        var picked = tableAttack
-        picked.append(contentsOf: tableDefense.compactMap { $0 })
-        hands[defender, default: []].append(contentsOf: picked)
-        tableAttack = []
-        tableDefense = []
-        selectedCard = nil
-        statusMessage = ""
-
-        drawUpTo6(attacker)
-        // Defender keeps their enlarged hand and does not redraw.
-        checkGameEnd()
-        moveCount += 1
-    }
-
-    func endRoundSuccessfully() {
-        guard attacker == .white || attacker == .black, canEndRound else { return }
-        discardCount += tableAttack.count + tableDefense.compactMap { $0 }.count
-        tableAttack = []
-        tableDefense = []
-        selectedCard = nil
-
-        drawUpTo6(attacker)
-        drawUpTo6(defender)
-
-        let newAttacker = defender
-        let newDefender = attacker
-        attacker = newAttacker
-        defender = newDefender
-
-        checkGameEnd()
-        moveCount += 1
-    }
-
-    private func drawUpTo6(_ player: DurakPlayer) {
-        while (hands[player]?.count ?? 0) < 6, !deck.isEmpty {
-            hands[player, default: []].append(deck.removeFirst())
+    static func ranksOnTable(_ m: DurakMatch) -> Set<Int> {
+        var s = Set<Int>()
+        for pair in m.table {
+            s.insert(pair.attack.rank)
+            if let d = pair.defense { s.insert(d.rank) }
         }
+        return s
     }
 
-    private func checkGameEnd() {
-        guard deck.isEmpty else { return }
-        let whiteEmpty = hands[.white]?.isEmpty ?? true
-        let blackEmpty = hands[.black]?.isEmpty ?? true
-        if whiteEmpty && blackEmpty {
-            isDraw = true
-            statusMessage = t("A draw — the deck ran out with both hands empty at the same time.", "Ничья — колода закончилась одновременно с обеими руками.")
-        } else if whiteEmpty {
-            winner = .white
-            loser = .black
-            statusMessage = t("You're out! The bot is the fool.", "Вы вышли! Бот остался дураком.")
-        } else if blackEmpty {
-            winner = .black
-            loser = .white
-            statusMessage = t("The bot is out. You're the fool!", "Бот вышел. Вы — дурак!")
-        }
+    static func undefended(_ m: DurakMatch) -> Int {
+        m.table.filter { $0.defense == nil }.count
     }
 
-    func tapHandCard(_ card: DurakCard) {
-        guard winner == nil, !isDraw else { return }
-        if attacker == .white, isValidAttackCard(card) {
-            attack(card, by: .white)
-        } else if defender == .white, isValidDefenseCard(card) {
-            defend(card, by: .white)
-        }
+    /// Table cap for the current bout: 5 cards during the match's very
+    /// first bout, 6 thereafter — always further capped by the defender's
+    /// hand size at the start of their turn.
+    static func limit(_ m: DurakMatch) -> Int {
+        min(m.firstBout ? 5 : 6, m.defStart)
     }
 
-    /// Multiplayer: lets either color act with their own chosen card,
-    /// mirroring `tapHandCard` which is hardcoded to `.white` because
-    /// single-player always casts the local human as white.
-    func humanTapCard(_ card: DurakCard, color: DurakPlayer) {
-        guard winner == nil, !isDraw else { return }
-        if attacker == color, isValidAttackCard(card) {
-            attack(card, by: color)
-        } else if defender == color, isValidDefenseCard(card) {
-            defend(card, by: color)
-        }
-    }
-
-    // MARK: - Multiplayer sync
-
-    /// Replaces the current state wholesale with one received from the host,
-    /// so a multiplayer guest mirrors the host's authoritative (and
-    /// already-random) shuffle/draw results instead of generating its own.
-    /// The host device runs the real `reset()`/`attack()`/`defend()`/`take()`/
-    /// `endRoundSuccessfully()` logic exactly as in single-player and
-    /// broadcasts the result after every change; the guest's own engine
-    /// instance never calls those methods itself.
-    func applyDeal(deck: [DurakCard], trumpCard: DurakCard, whiteHand: [DurakCard], blackHand: [DurakCard], tableAttack: [DurakCard], tableDefense: [DurakCard?], attacker: DurakPlayer, defender: DurakPlayer, discardCount: Int, winner: DurakPlayer?, loser: DurakPlayer?, isDraw: Bool, statusMessage: String) {
-        self.deck = deck
-        self.trumpCard = trumpCard
-        self.hands = [.white: whiteHand, .black: blackHand]
-        self.tableAttack = tableAttack
-        self.tableDefense = tableDefense
-        self.attacker = attacker
-        self.defender = defender
-        self.discardCount = discardCount
-        self.winner = winner
-        self.loser = loser
-        self.isDraw = isDraw
-        self.selectedCard = nil
-        self.statusMessage = statusMessage
-    }
-}
-
-// MARK: - Simple AI (Black)
-
-extension DurakEngine {
-    /// Performs exactly one bot action if it is currently the bot's turn to
-    /// act, then returns. Called again after every state change so a bot
-    /// attack/defense sequence unfolds one step at a time.
-    func botActIfNeeded() {
-        guard winner == nil, !isDraw else { return }
-
-        if defender == .black, awaitingDefense {
-            botDefend()
-        } else if attacker == .black, !awaitingDefense {
-            botAttackOrEnd()
-        }
-    }
-
-    private func botDefend() {
-        guard let index = earliestUndefendedIndex, let hand = hands[.black] else { return }
-        let options = hand.filter { beats($0, tableAttack[index]) }
-        if let choice = options.min(by: { a, b in
-            if (a.suit == trumpSuit) != (b.suit == trumpSuit) { return b.suit == trumpSuit }
-            return a.rank < b.rank
-        }) {
-            defend(choice, by: .black)
-        } else {
-            take(by: .black)
-        }
-    }
-
-    private func botAttackOrEnd() {
-        guard let hand = hands[.black] else { return }
-        if tableAttack.isEmpty {
-            // Opening the round: lead with the lowest non-trump card.
-            let nonTrump = hand.filter { $0.suit != trumpSuit }.min { $0.rank < $1.rank }
-            let fallback = hand.min { $0.rank < $1.rank }
-            if let card = nonTrump ?? fallback {
-                attack(card, by: .black)
+    /// Ordered list of seats allowed to throw in this bout: starting at the
+    /// attacker, walking clockwise, skipping the defender and any out
+    /// seat; restricted to just the attacker and the defender's other
+    /// neighbor when `throwAll` is off (neighbors-only mode).
+    static func throwers(_ m: DurakMatch) -> [Int] {
+        var list: [Int] = []
+        var i = m.attacker
+        var steps = 0
+        while steps < m.n {
+            if i != m.defender && !m.out[i] {
+                list.append(i)
             }
+            i = (i + 1) % m.n
+            steps += 1
+        }
+        if !m.throwAll {
+            let nd = nextActive(m, m.defender)
+            list = list.filter { $0 == m.attacker || $0 == nd }
+        }
+        return list
+    }
+
+    /// Can seat `p` throw card `c` into the table right now?
+    static func canThrow(_ m: DurakMatch, _ p: Int, _ c: DurakCard) -> Bool {
+        guard throwers(m).contains(p) else { return false }
+        guard ranksOnTable(m).contains(c.rank) else { return false }
+        guard m.table.count < limit(m) else { return false }
+        guard undefended(m) < m.hands[m.defender].count else { return false }
+        return true
+    }
+
+    /// Переводной only: the defender may transfer the whole table (every
+    /// attack card on it sharing `c`'s rank, and nothing defended yet) to
+    /// the next active seat by playing a card of that same rank, provided
+    /// that seat has enough cards to receive the table plus the transfer card.
+    static func canTransfer(_ m: DurakMatch, _ c: DurakCard) -> Bool {
+        guard m.variant == .perevodnoy else { return false }
+        guard !m.table.isEmpty else { return false }
+        guard m.table.allSatisfy({ $0.defense == nil }) else { return false }
+        guard m.table.allSatisfy({ $0.attack.rank == c.rank }) else { return false }
+        let nd = nextActive(m, m.defender)
+        guard m.hands[nd].count >= m.table.count + 1 else { return false }
+        return true
+    }
+
+    /// What needs to happen next, and whose turn it is to do it.
+    static func pending(_ m: DurakMatch) -> DurakPending {
+        if m.over { return DurakPending(kind: .resolve, seat: -1) }
+        if m.table.isEmpty {
+            return DurakPending(kind: .lead, seat: m.attacker)
+        }
+        if undefended(m) > 0 && !m.taking {
+            return DurakPending(kind: .defend, seat: m.defender)
+        }
+        for j in throwers(m) {
+            if m.passed.contains(j) { continue }
+            if m.hands[j].contains(where: { canThrow(m, j, $0) }) {
+                return DurakPending(kind: .throwIn, seat: j)
+            }
+        }
+        return DurakPending(kind: .resolve, seat: -1)
+    }
+
+    // MARK: - Actions
+
+    @discardableResult
+    static func lead(_ m: DurakMatch, _ p: Int, _ c: DurakCard) -> Bool {
+        let w = pending(m)
+        guard w.kind == .lead, w.seat == p else { return false }
+        guard let idx = m.hands[p].firstIndex(of: c) else { return false }
+        m.hands[p].remove(at: idx)
+        m.table.append(DurakTPair(attack: c, defense: nil))
+        return true
+    }
+
+    @discardableResult
+    static func throwIn(_ m: DurakMatch, _ p: Int, _ c: DurakCard) -> Bool {
+        let w = pending(m)
+        guard w.kind == .throwIn, w.seat == p else { return false }
+        guard canThrow(m, p, c) else { return false }
+        guard let idx = m.hands[p].firstIndex(of: c) else { return false }
+        m.hands[p].remove(at: idx)
+        m.table.append(DurakTPair(attack: c, defense: nil))
+        return true
+    }
+
+    /// The current thrower declines to add anything more this bout.
+    @discardableResult
+    static func pass(_ m: DurakMatch, _ p: Int) -> Bool {
+        let w = pending(m)
+        guard w.kind == .throwIn, w.seat == p else { return false }
+        m.passed.insert(p)
+        return true
+    }
+
+    @discardableResult
+    static func defend(_ m: DurakMatch, _ p: Int, _ attackIndex: Int, _ c: DurakCard) -> Bool {
+        let w = pending(m)
+        guard w.kind == .defend, w.seat == p else { return false }
+        guard attackIndex >= 0, attackIndex < m.table.count else { return false }
+        guard m.table[attackIndex].defense == nil else { return false }
+        guard beats(c, m.table[attackIndex].attack, m.trump) else { return false }
+        guard let idx = m.hands[p].firstIndex(of: c) else { return false }
+        m.hands[p].remove(at: idx)
+        m.table[attackIndex].defense = c
+        return true
+    }
+
+    /// The defender gives up on beating the table and takes everything
+    /// into their hand (resolved once throwing-in has settled).
+    @discardableResult
+    static func take(_ m: DurakMatch, _ p: Int) -> Bool {
+        guard p == m.defender, !m.table.isEmpty, !m.taking else { return false }
+        m.taking = true
+        return true
+    }
+
+    /// Переводной: instead of defending, redirect the whole (still
+    /// undefended) table to the next seat, who becomes the new defender.
+    @discardableResult
+    static func transfer(_ m: DurakMatch, _ p: Int, _ c: DurakCard) -> Bool {
+        guard p == m.defender else { return false }
+        guard canTransfer(m, c) else { return false }
+        guard let idx = m.hands[p].firstIndex(of: c) else { return false }
+        m.hands[p].remove(at: idx)
+        m.table.append(DurakTPair(attack: c, defense: nil))
+        let nd = nextActive(m, m.defender)
+        m.attacker = m.defender
+        m.defender = nd
+        m.defStart = m.hands[m.defender].count
+        return true
+    }
+
+    /// Ends the current bout: collects the table (to the defender's hand if
+    /// taking, else to the discard pile), refills hands to 6 (attacker-
+    /// relative order, defender last), retires any seat left empty once the
+    /// deck is spent, then hands off to the next attacker/defender — or
+    /// ends the match if at most one seat is still in it.
+    @discardableResult
+    static func resolve(_ m: DurakMatch) -> Bool {
+        guard pending(m).kind == .resolve, !m.over else { return false }
+
+        let took = m.taking
+        let allCards = m.table.flatMap { pair -> [DurakCard] in
+            var c = [pair.attack]
+            if let d = pair.defense { c.append(d) }
+            return c
+        }
+        if took {
+            m.hands[m.defender].append(contentsOf: allCards)
+        } else {
+            m.discardCount += allCards.count
+        }
+        let oldDefender = m.defender
+        m.table = []
+
+        var order: [Int] = []
+        var i = m.attacker
+        var steps = 0
+        while steps < m.n {
+            if i != oldDefender && !m.out[i] {
+                order.append(i)
+            }
+            i = (i + 1) % m.n
+            steps += 1
+        }
+        if !m.out[oldDefender] {
+            order.append(oldDefender)
+        }
+        for seat in order {
+            while m.hands[seat].count < 6 && !m.deck.isEmpty {
+                m.hands[seat].append(m.deck.removeFirst())
+            }
+        }
+
+        if m.deck.isEmpty {
+            for seat in 0..<m.n where !m.out[seat] && m.hands[seat].isEmpty {
+                m.out[seat] = true
+                m.finish.append(seat)
+            }
+        }
+
+        m.firstBout = false
+        m.bout += 1
+        m.passed = []
+        m.taking = false
+
+        if m.bout >= 200 {
+            m.over = true
+            m.loser = -1
+            m.stalled = true
+            return true
+        }
+
+        let activeSeats = (0..<m.n).filter { !m.out[$0] }
+        if activeSeats.count <= 1 {
+            m.over = true
+            m.loser = activeSeats.first ?? -1
+            return true
+        }
+
+        let newAttacker = (took || m.out[oldDefender]) ? nextActive(m, oldDefender) : oldDefender
+        let newDefender = nextActive(m, newAttacker)
+        m.attacker = newAttacker
+        m.defender = newDefender
+        m.defStart = m.hands[newDefender].count
+        return true
+    }
+
+    // MARK: - Bot AI (3 levels; the rules above are exact, this heuristic is
+    // a faithful-in-spirit port of the documented Android behaviour: cheapest
+    // non-trump leads, greedy cheapest-beats-first defence, and a
+    // trump-count/deck-depth tradeoff for transfer-vs-defend-vs-take).
+
+    /// One automatic step for a bot seat (or to resolve a settled bout);
+    /// false when a human must act or the match has already ended.
+    @discardableResult
+    static func botStep(_ m: DurakMatch, isBot: (Int) -> Bool, level: (Int) -> Int, rnd: SeededGenerator) -> Bool {
+        guard !m.over else { return false }
+        let w = pending(m)
+        if w.kind == .resolve {
+            return resolve(m)
+        }
+        guard isBot(w.seat) else { return false }
+        let lvl = level(w.seat)
+        switch w.kind {
+        case .lead:
+            if let c = botLead(m, w.seat, lvl, rnd) { lead(m, w.seat, c) }
+        case .throwIn:
+            if let c = botThrow(m, w.seat, lvl, rnd) {
+                throwIn(m, w.seat, c)
+            } else {
+                pass(m, w.seat)
+            }
+        case .defend:
+            botDefend(m, w.seat, lvl, rnd)
+        case .resolve:
+            return resolve(m)
+        }
+        return true
+    }
+
+    static func botLead(_ m: DurakMatch, _ p: Int, _ level: Int, _ rnd: SeededGenerator) -> DurakCard? {
+        let hand = m.hands[p]
+        guard !hand.isEmpty else { return nil }
+        if level == 1 && rnd.nextDouble() < 0.4 {
+            return hand[rnd.nextInt(hand.count)]
+        }
+        let nonTrump = hand.filter { $0.suit != m.trump }
+        let pool = nonTrump.isEmpty ? hand : nonTrump
+        return pool.min { value($0, m.trump) < value($1, m.trump) }
+    }
+
+    static func botThrow(_ m: DurakMatch, _ p: Int, _ level: Int, _ rnd: SeededGenerator) -> DurakCard? {
+        let options = m.hands[p].filter { canThrow(m, p, $0) }
+        guard !options.isEmpty else { return nil }
+        if level == 1 {
+            if rnd.nextDouble() < 0.6 { return nil }
+            return options[rnd.nextInt(options.count)]
+        }
+        if level == 2 && rnd.nextDouble() < 0.25 { return nil }
+        return options.min { value($0, m.trump) < value($1, m.trump) }
+    }
+
+    /// Greedily assigns the cheapest beating card to each open attack, in
+    /// table order; returns an empty/partial plan if some attack has none
+    /// left (mirrors the Android bot's greedy, non-backtracking matcher).
+    static func planDefence(_ m: DurakMatch, _ p: Int) -> [Int: DurakCard] {
+        var plan: [Int: DurakCard] = [:]
+        var used: Set<DurakCard> = []
+        for idx in m.table.indices where m.table[idx].defense == nil {
+            let attack = m.table[idx].attack
+            let candidates = m.hands[p].filter { !used.contains($0) && beats($0, attack, m.trump) }
+            guard let choice = candidates.min(by: { value($0, m.trump) < value($1, m.trump) }) else { continue }
+            plan[idx] = choice
+            used.insert(choice)
+        }
+        return plan
+    }
+
+    /// Handles exactly one open attack per call (defend it, transfer the
+    /// whole table, or take) so the bot loop animates one card at a time.
+    static func botDefend(_ m: DurakMatch, _ p: Int, _ level: Int, _ rnd: SeededGenerator) {
+        guard let idx = m.table.firstIndex(where: { $0.defense == nil }) else {
+            take(m, p)
             return
         }
-        guard canEndRound else { return }
-        let throwables = hand.filter { isValidAttackCard($0) }
-        if let card = throwables.min(by: { a, b in
-            if (a.suit == trumpSuit) != (b.suit == trumpSuit) { return b.suit == trumpSuit }
-            return a.rank < b.rank
-        }) {
-            attack(card, by: .black)
+
+        if m.variant == .perevodnoy, level >= 2, idx == 0 {
+            let transferable = m.hands[p].filter { canTransfer(m, $0) }
+            if let c = transferable.min(by: { value($0, m.trump) < value($1, m.trump) }) {
+                let trumpCount = m.hands[p].filter { $0.suit == m.trump }.count
+                let deckHasCards = !m.deck.isEmpty
+                let weakHand = trumpCount <= 1
+                let shouldTransfer = weakHand && (deckHasCards || m.hands[p].count > m.table.count + 2)
+                if shouldTransfer {
+                    transfer(m, p, c)
+                    return
+                }
+            }
+        }
+
+        let attack = m.table[idx].attack
+        let candidates = m.hands[p].filter { beats($0, attack, m.trump) }
+        if level == 1 && rnd.nextDouble() < 0.3, !candidates.isEmpty {
+            defend(m, p, idx, candidates[rnd.nextInt(candidates.count)])
+            return
+        }
+        if let choice = candidates.min(by: { value($0, m.trump) < value($1, m.trump) }) {
+            defend(m, p, idx, choice)
         } else {
-            endRoundSuccessfully()
+            take(m, p)
+        }
+    }
+
+    /// Best-effort suggestion for the hint button — always "hard"-level.
+    static func hint(_ m: DurakMatch, _ p: Int) -> DurakCard? {
+        let w = pending(m)
+        guard w.seat == p else { return nil }
+        switch w.kind {
+        case .lead:
+            return botLead(m, p, 3, SeededGenerator())
+        case .throwIn:
+            return botThrow(m, p, 3, SeededGenerator())
+        case .defend:
+            guard let idx = m.table.firstIndex(where: { $0.defense == nil }) else { return nil }
+            let attack = m.table[idx].attack
+            return m.hands[p].filter { beats($0, attack, m.trump) }.min { value($0, m.trump) < value($1, m.trump) }
+        case .resolve:
+            return nil
         }
     }
 }
