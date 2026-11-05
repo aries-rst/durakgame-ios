@@ -11,6 +11,7 @@ final class MultiplayerManager: NSObject, ObservableObject {
     @Published var state: ConnectionState = .idle
     @Published var role: Role = .none
     @Published var availablePeers: [MCPeerID] = []
+    @Published var discoveredGames: [MCPeerID: [String: String]] = [:]
     @Published var errorMessage: String? = nil
     var onReceive: ((Data) -> Void)?
     var onStateChange: ((Bool) -> Void)?
@@ -27,10 +28,10 @@ final class MultiplayerManager: NSObject, ObservableObject {
         session = MCSession(peer: myPeerId, securityIdentity: nil, encryptionPreference: .required)
         session.delegate = self
     }
-    func startHosting() { role = .host; state = .hosting; let a = MCNearbyServiceAdvertiser(peer: myPeerId, discoveryInfo: nil, serviceType: serviceType); a.delegate = self; a.startAdvertisingPeer(); advertiser = a }
-    func startBrowsing() { role = .guest; state = .browsing; availablePeers = []; let b = MCNearbyServiceBrowser(peer: myPeerId, serviceType: serviceType); b.delegate = self; b.startBrowsingForPeers(); browser = b }
+    func startHosting(info: [String: String] = [:]) { role = .host; state = .hosting; let a = MCNearbyServiceAdvertiser(peer: myPeerId, discoveryInfo: info, serviceType: serviceType); a.delegate = self; a.startAdvertisingPeer(); advertiser = a }
+    func startBrowsing() { role = .guest; state = .browsing; availablePeers = []; discoveredGames = [:]; let b = MCNearbyServiceBrowser(peer: myPeerId, serviceType: serviceType); b.delegate = self; b.startBrowsingForPeers(); browser = b }
     func invite(_ peer: MCPeerID) { state = .connecting; browser?.invitePeer(peer, to: session, withContext: nil, timeout: 20) }
-    func stop() { advertiser?.stopAdvertisingPeer(); advertiser = nil; browser?.stopBrowsingForPeers(); browser = nil; session.disconnect(); state = .idle; role = .none; availablePeers = [] }
+    func stop() { advertiser?.stopAdvertisingPeer(); advertiser = nil; browser?.stopBrowsingForPeers(); browser = nil; session.disconnect(); state = .idle; role = .none; availablePeers = []; discoveredGames = [:] }
     func send<T: Encodable>(_ payload: T) {
         guard !session.connectedPeers.isEmpty else { return }
         do { let data = try JSONEncoder().encode(payload); try session.send(data, toPeers: session.connectedPeers, with: .reliable) }
@@ -63,6 +64,16 @@ extension MultiplayerManager: MCNearbyServiceAdvertiserDelegate {
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) { invitationHandler(true, session) }
 }
 extension MultiplayerManager: MCNearbyServiceBrowserDelegate {
-    func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) { DispatchQueue.main.async { if !self.availablePeers.contains(peerID) { self.availablePeers.append(peerID) } } }
-    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) { DispatchQueue.main.async { self.availablePeers.removeAll { $0 == peerID } } }
+    func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
+        DispatchQueue.main.async {
+            if !self.availablePeers.contains(peerID) { self.availablePeers.append(peerID) }
+            self.discoveredGames[peerID] = info ?? [:]
+        }
+    }
+    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
+        DispatchQueue.main.async {
+            self.availablePeers.removeAll { $0 == peerID }
+            self.discoveredGames.removeValue(forKey: peerID)
+        }
+    }
 }
