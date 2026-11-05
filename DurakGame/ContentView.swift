@@ -3,6 +3,8 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var store = StoreManager()
     @ObservedObject private var lang = AppLang.shared
+    @State private var options = DurakGameOptions.load()
+    @State private var showSetup = false
     @State private var showGame = false
     @State private var showPremium = false
     @State private var showLobby = false
@@ -26,7 +28,7 @@ struct ContentView: View {
                             .font(.system(size: 36, weight: .heavy, design: .serif))
                             .foregroundStyle(cream)
                             .tracking(6)
-                        Text(t("Throw-in, 36 cards", "Подкидной, 36 карт"))
+                        Text(t("Throw-in & transfer, 2–6 players", "Подкидной и переводной · 2–6 игроков"))
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(gold.opacity(0.85))
 
@@ -52,7 +54,7 @@ struct ContentView: View {
 
                     VStack(spacing: 14) {
                         Button {
-                            showGame = true
+                            showSetup = true
                         } label: {
                             menuLabel(t("Play vs Bot", "Играть с ботом"), system: "person.2.fill")
                         }
@@ -86,13 +88,19 @@ struct ContentView: View {
                 }
             }
             .navigationDestination(isPresented: $showGame) {
-                GameView(store: store)
+                LocalGameView(store: store, options: options)
             }
             .navigationDestination(isPresented: $showLobby) {
                 MultiplayerLobbyView(store: store)
             }
             .sheet(isPresented: $showPremium) {
                 PremiumView(store: store)
+            }
+            .sheet(isPresented: $showSetup) {
+                GameSetupView(options: $options) {
+                    showSetup = false
+                    showGame = true
+                }
             }
         }
         .preferredColorScheme(.dark)
