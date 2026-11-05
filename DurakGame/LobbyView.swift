@@ -38,7 +38,10 @@ struct MultiplayerLobbyView: View {
                         VStack(spacing: 14) {
                             Button {
                                 myColor = .white
-                                multiplayer.startHosting()
+                                multiplayer.startHosting(info: [
+                                    "host": UIDevice.current.name,
+                                    "status": t("Throw-in, 2 players", "Подкидной, 2 игрока")
+                                ])
                             } label: {
                                 lobbyButtonLabel(t("Host a Game", "Создать игру"), system: "antenna.radiowaves.left.and.right")
                             }
@@ -53,21 +56,19 @@ struct MultiplayerLobbyView: View {
                     }
 
                     if multiplayer.role == .guest {
-                        List(multiplayer.availablePeers, id: \.self) { peer in
-                            Button {
-                                multiplayer.invite(peer)
-                            } label: {
-                                HStack {
-                                    Image(systemName: "iphone")
-                                    Text(peer.displayName)
-                                    Spacer()
-                                    Text(t("Invite", "Пригласить")).font(.caption)
+                        ScrollView {
+                            VStack(spacing: 10) {
+                                ForEach(multiplayer.availablePeers, id: \.self) { peer in
+                                    Button {
+                                        multiplayer.invite(peer)
+                                    } label: {
+                                        gameCardLabel(for: peer)
+                                    }
                                 }
                             }
                         }
-                        .listStyle(.plain)
                         .frame(maxHeight: 240)
-                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 32)
                     }
 
                     if multiplayer.role != .none {
@@ -116,6 +117,37 @@ struct MultiplayerLobbyView: View {
         .foregroundStyle(cream)
         .padding(.vertical, 16)
         .padding(.horizontal, 18)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.white.opacity(0.06))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(gold.opacity(0.5), lineWidth: 1))
+        )
+    }
+
+    private func gameCardLabel(for peer: MCPeerID) -> some View {
+        let info = multiplayer.discoveredGames[peer] ?? [:]
+        let hostName = info["host"] ?? peer.displayName
+        let gameStatus = info["status"] ?? t("Throw-in, 2 players", "Подкидной, 2 игрока")
+        return HStack(spacing: 14) {
+            Image(systemName: "person.wave.2.fill")
+                .font(.system(size: 22))
+                .foregroundStyle(gold)
+                .frame(width: 32)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(hostName)
+                    .font(.subheadline.bold())
+                    .foregroundStyle(cream)
+                Text(gameStatus)
+                    .font(.caption)
+                    .foregroundStyle(cream.opacity(0.65))
+            }
+            Spacer()
+            Text(t("Invite", "Пригласить"))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(gold)
+        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
         .background(
             RoundedRectangle(cornerRadius: 14)
                 .fill(Color.white.opacity(0.06))
