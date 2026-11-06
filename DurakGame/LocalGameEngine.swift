@@ -9,12 +9,19 @@ import Foundation
 final class LocalGameEngine: ObservableObject {
     @Published private(set) var version: Int = 0
     @Published private(set) var toastMessage: String? = nil
+    /// Seat → speech-bubble text ("Беру"/"Пас"/"Перевожу!"/"Взял"/"Бито"),
+    /// shown for ~1.4s after that seat's move — a literal port of
+    /// Android's `GameController.bubbles`/`say()`.
+    @Published private(set) var bubbles: [Int: String] = [:]
 
     private(set) var match: DurakMatch
     let humanSeat = 0
     private let rng = SeededGenerator()
     private var botLevels: [Int]
     private let botLevel: Int
+    /// The last `match.evSeq` a bubble was already shown for, so a redraw
+    /// that didn't come from a new move never re-triggers one.
+    private var lastProcessedEvSeq: Int = -1
 
     var selectedCard: DurakCard? = nil
     var hintCard: DurakCard? = nil
@@ -27,7 +34,34 @@ final class LocalGameEngine: ObservableObject {
         runBotsIfNeeded()
     }
 
-    private func bump() { version += 1 }
+    private func bump() {
+        processEvent()
+        version += 1
+    }
+
+    /// Shows a speech bubble over the seat that just acted — only for the
+    /// event kinds Android bubbles (take/pass/transfer/took/beaten);
+    /// lead/throw/defend get no bubble on Android either (just a move
+    /// sound there, which this app doesn't yet have).
+    private func processEvent() {
+        guard match.evSeq != lastProcessedEvSeq, let ev = match.lastEvent else { return }
+        lastProcessedEvSeq = match.evSeq
+        let text: String
+        switch ev.kind {
+        case "take": text = t("Take", "Беру")
+        case "pass": text = t("Pass", "Пас")
+        case "transfer": text = t("Transfer!", "Перевожу!")
+        case "took": text = t("Took", "Взял")
+        case "beaten": text = t("Done", "Бито")
+        default: return
+        }
+        let seat = ev.seat
+        bubbles[seat] = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+            guard let self = self, self.bubbles[seat] == text else { return }
+            self.bubbles[seat] = nil
+        }
+    }
 
     func isBot(_ p: Int) -> Bool { p != humanSeat }
 
