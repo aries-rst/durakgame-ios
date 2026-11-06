@@ -111,6 +111,26 @@ struct LocalGameView: View {
                 cardCountIndicator(count)
             }
         }
+        .overlay(alignment: .top) {
+            if let bubble = engine.bubbles[p] {
+                speechBubble(bubble).offset(y: -34).transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: engine.bubbles[p])
+    }
+
+    /// A short speech bubble over a seat's avatar after it takes/passes/
+    /// transfers/gets taken-from/gets beaten — matches Android's bubbles
+    /// (`GameController.bubbles`/`say()`), shown for ~1.4s.
+    private func speechBubble(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(.black)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(gold))
+            .fixedSize()
+            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
     }
 
     private func roleTag(_ emoji: String) -> some View {
