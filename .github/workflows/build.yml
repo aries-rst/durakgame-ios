@@ -26,6 +26,12 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Resolve Swift Package dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project DurakGame.xcodeproj \
+            -scheme DurakGame
+
       - name: Build (unsigned, simulator) — scaffold validation
         run: |
           xcodebuild build \
@@ -60,6 +66,12 @@ jobs:
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      - name: Resolve Swift Package dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project DurakGame.xcodeproj \
+            -scheme DurakGame
 
       - name: Import signing certificate & provisioning profile
         env:
