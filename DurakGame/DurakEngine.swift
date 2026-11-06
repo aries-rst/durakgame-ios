@@ -123,6 +123,16 @@ final class SeededGenerator {
 
 /// Mutable match state. Kept as a class so the `Durak` engine functions can
 /// mutate it in place, exactly like the Kotlin `DState` does.
+/// The last thing that happened in a match, for speech bubbles — a literal
+/// port of Android's `Ev` class. `kind` is one of lead|throw|defend|take|
+/// pass|transfer|took|beaten, matching Android's event-type strings exactly
+/// so UI code can switch on them the same way `GameController.onView` does.
+struct DurakEvent {
+    var kind: String
+    var seat: Int
+    var card: DurakCard? = nil
+}
+
 final class DurakMatch {
     let n: Int
     let variant: DurakVariant
@@ -161,6 +171,13 @@ final class DurakMatch {
     var stalled: Bool = false
 
     var discardCount: Int = 0
+
+    /// The last action taken and who took it, for speech-bubble feedback —
+    /// a literal port of Android's `DState.last: Ev?`.
+    var lastEvent: DurakEvent? = nil
+    /// Bumped on every action so a view can tell a brand-new event from one
+    /// it already reacted to, exactly like Android's `TView.evSeq`.
+    var evSeq: Int = 0
 
     init(n: Int, variant: DurakVariant, throwAll: Bool, hands: [[DurakCard]], deck: [DurakCard], trumpCard: DurakCard, attacker: Int) {
         self.n = n
@@ -341,6 +358,8 @@ enum Durak {
         guard let idx = m.hands[p].firstIndex(of: c) else { return false }
         m.hands[p].remove(at: idx)
         m.table.append(DurakTPair(attack: c, defense: nil))
+        m.lastEvent = DurakEvent(kind: "lead", seat: p, card: c)
+        m.evSeq += 1
         return true
     }
 
@@ -352,6 +371,8 @@ enum Durak {
         guard let idx = m.hands[p].firstIndex(of: c) else { return false }
         m.hands[p].remove(at: idx)
         m.table.append(DurakTPair(attack: c, defense: nil))
+        m.lastEvent = DurakEvent(kind: "throw", seat: p, card: c)
+        m.evSeq += 1
         return true
     }
 
@@ -361,6 +382,8 @@ enum Durak {
         let w = pending(m)
         guard w.kind == .throwIn, w.seat == p else { return false }
         m.passed.insert(p)
+        m.lastEvent = DurakEvent(kind: "pass", seat: p)
+        m.evSeq += 1
         return true
     }
 
@@ -374,6 +397,8 @@ enum Durak {
         guard let idx = m.hands[p].firstIndex(of: c) else { return false }
         m.hands[p].remove(at: idx)
         m.table[attackIndex].defense = c
+        m.lastEvent = DurakEvent(kind: "defend", seat: p, card: c)
+        m.evSeq += 1
         return true
     }
 
@@ -383,6 +408,8 @@ enum Durak {
     static func take(_ m: DurakMatch, _ p: Int) -> Bool {
         guard p == m.defender, !m.table.isEmpty, !m.taking else { return false }
         m.taking = true
+        m.lastEvent = DurakEvent(kind: "take", seat: p)
+        m.evSeq += 1
         return true
     }
 
@@ -396,6 +423,8 @@ enum Durak {
         m.hands[p].remove(at: idx)
         m.table.append(DurakTPair(attack: c, defense: nil))
         let nd = nextActive(m, m.defender)
+        m.lastEvent = DurakEvent(kind: "transfer", seat: p, card: c)
+        m.evSeq += 1
         m.attacker = m.defender
         m.defender = nd
         m.defStart = m.hands[m.defender].count
@@ -451,6 +480,8 @@ enum Durak {
             }
         }
 
+        m.lastEvent = DurakEvent(kind: took ? "took" : "beaten", seat: oldDefender)
+        m.evSeq += 1
         m.firstBout = false
         m.bout += 1
         m.passed = []
