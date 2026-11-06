@@ -244,7 +244,7 @@ struct LocalGameView: View {
                     pillButton(t("Take", "Беру"), system: "hand.raised.fill", tint: burgundy) { engine.humanTake() }
                 }
                 if w.kind != .resolve {
-                    pillButton(t("Hint", "Подсказка"), system: "lightbulb.fill", tint: gold) { engine.requestHint() }
+                    pillButton(t("Hint", "Подсказка"), system: store.isPremium ? "lightbulb.fill" : "play.rectangle.fill", tint: gold) { Ads.rewardedHint { engine.requestHint() } }
                 }
             }
             Spacer()
@@ -355,7 +355,9 @@ struct LocalGameView: View {
                     .padding(.horizontal, 24)
                 HStack(spacing: 16) {
                     Button(t("Play again", "Ещё партия")) {
-                        engine.rematch(variant: options.variant, players: options.players, botLevel: options.botLevel, throwAll: options.throwAll)
+                        Ads.afterGame {
+                            engine.rematch(variant: options.variant, players: options.players, botLevel: options.botLevel, throwAll: options.throwAll)
+                        }
                     }
                     .fontWeight(.bold)
                     .padding(.horizontal, 18).padding(.vertical, 10)
@@ -363,7 +365,7 @@ struct LocalGameView: View {
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
-                    Button(t("Menu", "В меню")) { dismiss() }
+                    Button(t("Menu", "В меню")) { Ads.afterGame { dismiss() } }
                         .padding(.horizontal, 18).padding(.vertical, 10)
                         .foregroundStyle(cream)
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(cream.opacity(0.4), lineWidth: 1))

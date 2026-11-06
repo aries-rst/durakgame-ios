@@ -20,6 +20,7 @@ struct PremiumView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     featureRow(t("No ads", "Без рекламы"))
+                    featureRow(t("Hints without ads", "Подсказки без рекламы"))
                     featureRow(t("Local Wi-Fi/Bluetooth multiplayer", "Локальный мультиплеер по Wi-Fi/Bluetooth"))
                     featureRow(t("One-time purchase — yours forever", "Разовая покупка — навсегда"))
                 }

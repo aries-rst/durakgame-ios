@@ -87,6 +87,9 @@ struct ContentView: View {
                         .padding(.bottom, 24)
                 }
             }
+            .safeAreaInset(edge: .bottom) {
+                if !store.isPremium { BannerAdView().frame(maxWidth: .infinity) }
+            }
             .navigationDestination(isPresented: $showGame) {
                 LocalGameView(store: store, options: options)
             }
@@ -104,6 +107,7 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .onAppear { Ads.start() }
     }
 
     private func menuLabel(_ text: String, system: String) -> some View {
