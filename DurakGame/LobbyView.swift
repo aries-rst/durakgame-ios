@@ -34,6 +34,7 @@ struct MultiplayerLobbyView: View {
     @State private var hostThrowAll: Bool = true
     @State private var engine: NetworkGameEngine? = nil
     @State private var startGame = false
+    @State private var showPremium = false
 
     @Environment(\.dismiss) private var dismiss
 
@@ -81,6 +82,9 @@ struct MultiplayerLobbyView: View {
                     NetworkGameView(store: store, engine: engine, multiplayer: multiplayer)
                 }
             }
+            .sheet(isPresented: $showPremium) {
+                PremiumView(store: store)
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -108,8 +112,18 @@ struct MultiplayerLobbyView: View {
                 .foregroundStyle(cream.opacity(0.7))
                 .multilineTextAlignment(.center)
 
-            Button { stage = .hostSetup } label: {
-                lobbyButtonLabel(t("Host a Game", "Создать игру"), system: "antenna.radiowaves.left.and.right")
+            // Hosting is Premium-gated, exactly like Android's NetScreen
+            // ("⭐ netCreate" → openPremium(true) when not premium); finding
+            // and joining someone else's game is free for everyone, on both
+            // platforms — only the "Host a Game" action checks isPremium.
+            Button {
+                if store.isPremium {
+                    stage = .hostSetup
+                } else {
+                    showPremium = true
+                }
+            } label: {
+                lobbyButtonLabel(t("Host a Game", "Создать игру"), system: store.isPremium ? "antenna.radiowaves.left.and.right" : "lock.fill")
             }
             Button {
                 multiplayer.startBrowsing()
