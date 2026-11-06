@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showGame = false
     @State private var showPremium = false
     @State private var showLobby = false
+    @State private var showStats = false
 
     private let felt = Color(red: 0.08, green: 0.18, blue: 0.12)
     private let burgundy = Color(red: 0.42, green: 0.09, blue: 0.13)
@@ -70,6 +71,12 @@ struct ContentView: View {
                         }
 
                         Button {
+                            showStats = true
+                        } label: {
+                            menuLabel(t("Statistics", "Статистика"), system: "chart.bar.fill")
+                        }
+
+                        Button {
                             showPremium = true
                         } label: {
                             menuLabel(store.isPremium ? t("Premium Active", "Premium активен") : "Premium — \(store.priceText)", system: store.isPremium ? "crown.fill" : "crown")
@@ -92,6 +99,9 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showGame) {
                 LocalGameView(store: store, options: options)
+            }
+            .navigationDestination(isPresented: $showStats) {
+                DurakStatsView()
             }
             .navigationDestination(isPresented: $showLobby) {
                 MultiplayerLobbyView(store: store)

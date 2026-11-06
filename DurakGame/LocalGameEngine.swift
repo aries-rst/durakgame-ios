@@ -19,6 +19,7 @@ final class LocalGameEngine: ObservableObject {
     private let rng = SeededGenerator()
     private var botLevels: [Int]
     private let botLevel: Int
+    private var statsRecorded = false
     /// The last `match.evSeq` a bubble was already shown for, so a redraw
     /// that didn't come from a new move never re-triggers one.
     private var lastProcessedEvSeq: Int = -1
@@ -36,7 +37,16 @@ final class LocalGameEngine: ObservableObject {
 
     private func bump() {
         processEvent()
+        recordStatsIfFinished()
         version += 1
+    }
+
+    /// Counts each finished game once: loser == human → loss, loser == -1 → draw, else a win.
+    private func recordStatsIfFinished() {
+        guard match.over, !statsRecorded else { return }
+        statsRecorded = true
+        let result = match.loser == humanSeat ? -1 : (match.loser < 0 ? 0 : 1)
+        DurakStats.record(variant: match.variant, players: match.n, result: result)
     }
 
     /// Shows a speech bubble over the seat that just acted — only for the
@@ -125,6 +135,7 @@ final class LocalGameEngine: ObservableObject {
     func rematch(variant: DurakVariant, players: Int, botLevel: Int, throwAll: Bool) {
         let fresh = Durak.newGame(n: players, variant: variant, throwAll: throwAll, rnd: rng)
         match = fresh
+        statsRecorded = false
         botLevels = Array(repeating: botLevel, count: fresh.n)
         selectedCard = nil
         hintCard = nil
