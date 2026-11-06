@@ -478,10 +478,11 @@ enum Durak {
         return true
     }
 
-    // MARK: - Bot AI (3 levels; the rules above are exact, this heuristic is
-    // a faithful-in-spirit port of the documented Android behaviour: cheapest
-    // non-trump leads, greedy cheapest-beats-first defence, and a
-    // trump-count/deck-depth tradeoff for transfer-vs-defend-vs-take).
+    // MARK: - Bot AI (3 levels) — a literal port of the Android engine's bot
+    // (`botLead`/`botThrow`/`planDefence`/`botDefend`/`hint` in
+    // `DurakEngine.kt`), not just "faithful in spirit": every probability,
+    // threshold and tie-break below matches the Kotlin source, so the bot
+    // plays identically to Android at the same level.
 
     /// One automatic step for a bot seat (or to resolve a settled bout);
     /// false when a human must act or the match has already ended.
@@ -496,7 +497,7 @@ enum Durak {
         let lvl = level(w.seat)
         switch w.kind {
         case .lead:
-            if let c = botLead(m, w.seat, lvl, rnd) { lead(m, w.seat, c) }
+            lead(m, w.seat, botLead(m, w.seat, lvl, rnd))
         case .throwIn:
             if let c = botThrow(m, w.seat, lvl, rnd) {
                 throwIn(m, w.seat, c)
@@ -504,99 +505,154 @@ enum Durak {
                 pass(m, w.seat)
             }
         case .defend:
-            botDefend(m, w.seat, lvl, rnd)
+            switch botDefend(m, lvl, rnd) {
+            case .take: take(m, w.seat)
+            case .transfer(let c): transfer(m, w.seat, c)
+            case .defend(let c, let idx): defend(m, w.seat, idx, c)
+            }
         case .resolve:
             return resolve(m)
         }
         return true
     }
 
-    static func botLead(_ m: DurakMatch, _ p: Int, _ level: Int, _ rnd: SeededGenerator) -> DurakCard? {
-        let hand = m.hands[p]
-        guard !hand.isEmpty else { return nil }
+    /// Android `botLead`: the cheapest card by value; level 1 sometimes
+    /// leads completely at random; level 3 prefers a non-trump rank it
+    /// holds a pair of (≤ jack) while the deck still has cards, to set up
+    /// a throw-in later. Callers only invoke this when it is a bot's turn
+    /// to open an empty table, so its hand is never empty (matches
+    /// Android's non-null `Card` return).
+    static func botLead(_ m: DurakMatch, _ p: Int, _ level: Int, _ rnd: SeededGenerator) -> DurakCard {
+        let h = m.hands[p]
+        let t = m.trump
         if level == 1 && rnd.nextDouble() < 0.4 {
-            return hand[rnd.nextInt(hand.count)]
+            return h[rnd.nextInt(h.count)]
         }
-        let nonTrump = hand.filter { $0.suit != m.trump }
-        let pool = nonTrump.isEmpty ? hand : nonTrump
-        return pool.min { value($0, m.trump) < value($1, m.trump) }
-    }
-
-    static func botThrow(_ m: DurakMatch, _ p: Int, _ level: Int, _ rnd: SeededGenerator) -> DurakCard? {
-        let options = m.hands[p].filter { canThrow(m, p, $0) }
-        guard !options.isEmpty else { return nil }
-        if level == 1 {
-            if rnd.nextDouble() < 0.6 { return nil }
-            return options[rnd.nextInt(options.count)]
-        }
-        if level == 2 && rnd.nextDouble() < 0.25 { return nil }
-        return options.min { value($0, m.trump) < value($1, m.trump) }
-    }
-
-    /// Greedily assigns the cheapest beating card to each open attack, in
-    /// table order; returns an empty/partial plan if some attack has none
-    /// left (mirrors the Android bot's greedy, non-backtracking matcher).
-    static func planDefence(_ m: DurakMatch, _ p: Int) -> [Int: DurakCard] {
-        var plan: [Int: DurakCard] = [:]
-        var used: Set<DurakCard> = []
-        for idx in m.table.indices where m.table[idx].defense == nil {
-            let attack = m.table[idx].attack
-            let candidates = m.hands[p].filter { !used.contains($0) && beats($0, attack, m.trump) }
-            guard let choice = candidates.min(by: { value($0, m.trump) < value($1, m.trump) }) else { continue }
-            plan[idx] = choice
-            used.insert(choice)
-        }
-        return plan
-    }
-
-    /// Handles exactly one open attack per call (defend it, transfer the
-    /// whole table, or take) so the bot loop animates one card at a time.
-    static func botDefend(_ m: DurakMatch, _ p: Int, _ level: Int, _ rnd: SeededGenerator) {
-        guard let idx = m.table.firstIndex(where: { $0.defense == nil }) else {
-            take(m, p)
-            return
-        }
-
-        if m.variant == .perevodnoy, level >= 2, idx == 0 {
-            let transferable = m.hands[p].filter { canTransfer(m, $0) }
-            if let c = transferable.min(by: { value($0, m.trump) < value($1, m.trump) }) {
-                let trumpCount = m.hands[p].filter { $0.suit == m.trump }.count
-                let deckHasCards = !m.deck.isEmpty
-                let weakHand = trumpCount <= 1
-                let shouldTransfer = weakHand && (deckHasCards || m.hands[p].count > m.table.count + 2)
-                if shouldTransfer {
-                    transfer(m, p, c)
-                    return
-                }
+        let sorted = h.sorted { value($0, t) < value($1, t) }
+        if level == 3 && !m.deck.isEmpty {
+            var cnt: [Int: Int] = [:]
+            for c in h where c.suit != t { cnt[c.rank, default: 0] += 1 }
+            if let pick = sorted.first(where: { $0.suit != t && (cnt[$0.rank] ?? 0) >= 2 && $0.rank <= 11 }) {
+                return pick
             }
         }
-
-        let attack = m.table[idx].attack
-        let candidates = m.hands[p].filter { beats($0, attack, m.trump) }
-        if level == 1 && rnd.nextDouble() < 0.3, !candidates.isEmpty {
-            defend(m, p, idx, candidates[rnd.nextInt(candidates.count)])
-            return
-        }
-        if let choice = candidates.min(by: { value($0, m.trump) < value($1, m.trump) }) {
-            defend(m, p, idx, choice)
-        } else {
-            take(m, p)
-        }
+        return sorted[0]
     }
 
-    /// Best-effort suggestion for the hint button — always "hard"-level.
+    /// Android `botThrow`: level 1 is a coin flip on the cheapest legal
+    /// card; level 2 withholds it 25% of the time once the deck is gone;
+    /// otherwise the cheapest legal card is thrown unless it looks too
+    /// costly to give up — trumps are never thrown except while taking,
+    /// rank ≥ 13 is always withheld, and rank ≥ 11 is withheld early in
+    /// the deck. Exact thresholds match Android's.
+    static func botThrow(_ m: DurakMatch, _ p: Int, _ level: Int, _ rnd: SeededGenerator) -> DurakCard? {
+        let t = m.trump
+        let cand = m.hands[p].filter { canThrow(m, p, $0) }.sorted { value($0, t) < value($1, t) }
+        guard let c = cand.first else { return nil }
+        if level == 1 {
+            return rnd.nextDouble() < 0.5 ? c : nil
+        }
+        if m.deck.isEmpty { return c }
+        if m.taking {
+            return (c.suit != t && c.rank <= (level == 3 ? 11 : 10)) ? c : nil
+        }
+        if c.suit == t { return nil }
+        if c.rank >= 13 { return nil }
+        if c.rank >= 11 && m.deck.count > 10 { return nil }
+        return c
+    }
+
+    /// A full defence plan covering every currently-open attack, highest-
+    /// value attack assigned first — matches Android `planDefence` exactly,
+    /// including returning nil the instant any open attack has nothing
+    /// left in hand to beat it (no partial plans, unlike an earlier
+    /// version of this file).
+    struct DurakDefencePlan {
+        var moves: [(card: DurakCard, tableIndex: Int)]
+        var cost: Int
+        var trumps: Int
+    }
+
+    static func planDefence(_ m: DurakMatch) -> DurakDefencePlan? {
+        let t = m.trump
+        var hand = m.hands[m.defender]
+        let open = m.table.enumerated()
+            .filter { $0.element.defense == nil }
+            .sorted { value($0.element.attack, t) > value($1.element.attack, t) }
+        var moves: [(card: DurakCard, tableIndex: Int)] = []
+        var cost = 0
+        var trumps = 0
+        for o in open {
+            let attack = o.element.attack
+            guard let choice = hand.filter({ beats($0, attack, t) }).min(by: { value($0, t) < value($1, t) }) else {
+                return nil
+            }
+            if let idx = hand.firstIndex(of: choice) { hand.remove(at: idx) }
+            moves.append((card: choice, tableIndex: o.offset))
+            cost += value(choice, t)
+            if choice.suit == t { trumps += 1 }
+        }
+        return DurakDefencePlan(moves: moves, cost: cost, trumps: trumps)
+    }
+
+    enum DurakDefendDecision {
+        case defend(DurakCard, Int)
+        case transfer(DurakCard)
+        case take
+    }
+
+    /// Android `botDefend`: prefer a cheap transfer (переводной, level > 1)
+    /// whenever the full defence plan is impossible, trump-heavy, more
+    /// expensive than the transfer card by more than 8, or on a coin flip;
+    /// otherwise follow the cheapest-first plan, but take instead when
+    /// that plan would burn a big trump (or two+ trumps) on an otherwise-
+    /// cheap table once the deck is running low.
+    static func botDefend(_ m: DurakMatch, _ level: Int, _ rnd: SeededGenerator) -> DurakDefendDecision {
+        let p = m.defender
+        let t = m.trump
+        let h = m.hands[p]
+        let tr = h.filter { canTransfer(m, $0) }.sorted { value($0, t) < value($1, t) }
+        let pl = planDefence(m)
+        if let c = tr.first, level > 1 {
+            let cheap = c.suit != t || (level == 3 && m.deck.isEmpty)
+            if cheap {
+                let shouldTransfer = pl == nil || pl!.trumps > 0 || pl!.cost > value(c, t) + 8 || rnd.nextDouble() < 0.5
+                if shouldTransfer { return .transfer(c) }
+            }
+        }
+        guard let plan = pl else {
+            if let c = tr.first { return .transfer(c) }
+            return .take
+        }
+        if level >= 2 && m.deck.count > 6 {
+            let bigTrump = plan.moves.contains { $0.card.suit == t && $0.card.rank >= (level == 3 ? 12 : 13) }
+            let onlyLow = m.table.allSatisfy { $0.attack.rank <= 9 && $0.attack.suit != t }
+            if (bigTrump || plan.trumps >= 2) && onlyLow && h.count <= 6 {
+                return .take
+            }
+        }
+        let f = plan.moves[0]
+        return .defend(f.card, f.tableIndex)
+    }
+
+    /// Best-effort suggestion for the hint button — always "hard"-level,
+    /// matching Android `hint`'s own fixed-seed RNG (seed 1) so repeated
+    /// hint requests on the same table state always suggest the same move.
     static func hint(_ m: DurakMatch, _ p: Int) -> DurakCard? {
         let w = pending(m)
         guard w.seat == p else { return nil }
+        let rnd = SeededGenerator(seed: 1)
         switch w.kind {
         case .lead:
-            return botLead(m, p, 3, SeededGenerator())
+            return botLead(m, p, 3, rnd)
         case .throwIn:
-            return botThrow(m, p, 3, SeededGenerator())
+            return botThrow(m, p, 3, rnd)
         case .defend:
-            guard let idx = m.table.firstIndex(where: { $0.defense == nil }) else { return nil }
-            let attack = m.table[idx].attack
-            return m.hands[p].filter { beats($0, attack, m.trump) }.min { value($0, m.trump) < value($1, m.trump) }
+            switch botDefend(m, 3, rnd) {
+            case .take: return nil
+            case .transfer(let c): return c
+            case .defend(let c, _): return c
+            }
         case .resolve:
             return nil
         }
