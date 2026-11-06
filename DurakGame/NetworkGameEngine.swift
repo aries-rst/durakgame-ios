@@ -62,6 +62,13 @@ struct OnlineSnapshot: Codable {
     let loser: Int
     let stalled: Bool
     let discardCount: Int
+    /// `match.lastEvent`/`evSeq` at broadcast time, so a guest's mirrored
+    /// `DurakMatch` can show the same speech bubble as the host — see
+    /// `DurakEvent` in `DurakEngine.swift`. Optional only for forward
+    /// compatibility with any snapshot saved before this was added.
+    let lastEventKind: String?
+    let lastEventSeat: Int?
+    let evSeq: Int
 }
 
 /// A guest's requested action for its own seat; the host re-validates this
@@ -92,6 +99,13 @@ final class NetworkGameEngine: ObservableObject {
     /// Set once the transport reports the connection dropped; the view
     /// should offer the player a way back to the menu.
     @Published private(set) var connectionLost: Bool = false
+    /// Seat → speech-bubble text, same as `LocalGameEngine.bubbles`. Carried
+    /// over the wire via `OnlineSnapshot.lastEventKind`/`lastEventSeat` so a
+    /// guest sees the same bubble the host does. A burst of bot/resolve
+    /// steps between two broadcasts only shows the *last* one's bubble
+    /// (broadcasting is batched for network efficiency — see
+    /// `runResolveAndBots`), unlike the always-one-at-a-time local game.
+    @Published private(set) var bubbles: [Int: String] = [:]
 
     private(set) var match: DurakMatch
     let mySeat: Int
@@ -104,6 +118,7 @@ final class NetworkGameEngine: ObservableObject {
     private let multiplayer: MultiplayerManager
     private let rng = SeededGenerator()
     private var botTimer: Timer? = nil
+    private var lastProcessedEvSeq: Int = -1
 
     var selectedCard: DurakCard? = nil
 
@@ -295,8 +310,32 @@ final class NetworkGameEngine: ObservableObject {
     }
 
     private func bumpAndBroadcast() {
+        processEvent()
         version += 1
         if isHost { broadcast() }
+    }
+
+    /// Shows a speech bubble over the seat that just acted — mirrors
+    /// `LocalGameEngine.processEvent()` exactly (same event kinds, same
+    /// 1.4s duration); see that file for why lead/throw/defend get none.
+    private func processEvent() {
+        guard match.evSeq != lastProcessedEvSeq, let ev = match.lastEvent else { return }
+        lastProcessedEvSeq = match.evSeq
+        let text: String
+        switch ev.kind {
+        case "take": text = t("Take", "Беру")
+        case "pass": text = t("Pass", "Пас")
+        case "transfer": text = t("Transfer!", "Перевожу!")
+        case "took": text = t("Took", "Взял")
+        case "beaten": text = t("Done", "Бито")
+        default: return
+        }
+        let seat = ev.seat
+        bubbles[seat] = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+            guard let self = self, self.bubbles[seat] == text else { return }
+            self.bubbles[seat] = nil
+        }
     }
 
     private func broadcast() {
@@ -324,7 +363,10 @@ final class NetworkGameEngine: ObservableObject {
             over: match.over,
             loser: match.loser,
             stalled: match.stalled,
-            discardCount: match.discardCount
+            discardCount: match.discardCount,
+            lastEventKind: match.lastEvent?.kind,
+            lastEventSeat: match.lastEvent?.seat,
+            evSeq: match.evSeq
         )
     }
 
@@ -357,7 +399,12 @@ final class NetworkGameEngine: ObservableObject {
         m.loser = s.loser
         m.stalled = s.stalled
         m.discardCount = s.discardCount
+        if let kind = s.lastEventKind, let seat = s.lastEventSeat {
+            m.lastEvent = DurakEvent(kind: kind, seat: seat)
+        }
+        m.evSeq = s.evSeq
         match = m
+        processEvent()
         version += 1
     }
 
