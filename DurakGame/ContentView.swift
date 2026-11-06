@@ -60,11 +60,11 @@ struct ContentView: View {
                         }
 
                         Button {
-                            if store.isPremium {
-                                showLobby = true
-                            } else {
-                                showPremium = true
-                            }
+                            // Matches Android's NetScreen: anyone can open the
+                            // lobby to search for and join a nearby game for
+                            // free; only hosting is Premium-gated (enforced
+                            // inside MultiplayerLobbyView itself).
+                            showLobby = true
                         } label: {
                             menuLabel(t("Online Play (Wi-Fi/Bluetooth)", "Игра по сети (Wi-Fi/Bluetooth)"), system: "wifi")
                         }
